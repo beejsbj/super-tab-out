@@ -19,6 +19,7 @@
 
 const StorageService = window.SuperTabOutStorage;
 const TabsService = window.SuperTabOutTabs;
+const BookmarksService = window.SuperTabOutBookmarks;
 const SearchService = window.SuperTabOutSearch;
 const MetricsService = window.SuperTabOutMetrics;
 
@@ -2292,6 +2293,37 @@ async function renderSavedSessionsCard() {
   }
 }
 
+async function renderBookmarksCard() {
+  const card = document.getElementById('bookmarksCard');
+  const list = document.getElementById('bookmarksList');
+  const countEl = document.getElementById('bookmarksCount');
+  if (!card || !list) return;
+
+  try {
+    const links = await BookmarksService?.fetchBookmarkLinks?.({ limit: 12 }) || [];
+    if (links.length === 0) {
+      card.style.display = 'none';
+      return;
+    }
+    list.innerHTML = links.map(link => {
+      const safeUrl = escapeHtml(isSafeNavUrl(link.url) ? link.url : '#');
+      const safeTitle = escapeHtml(link.title || link.url);
+      const safeFolder = escapeHtml(link.folder || 'Other bookmarks');
+      return `<a class="bookmark-item" href="${safeUrl}" target="_blank" rel="noopener noreferrer" title="${safeTitle}">
+        <span class="bookmark-title">${safeTitle}</span>
+        <span class="bookmark-folder">${safeFolder}</span>
+      </a>`;
+    }).join('');
+    card.style.display = 'block';
+    if (countEl) countEl.textContent = `${links.length} links`;
+  } catch (err) {
+    console.warn('[tab-out] Could not load Chrome bookmarks:', err);
+    card.style.display = 'none';
+  } finally {
+    updateDashboardSideVisibility();
+  }
+}
+
 
 /* ----------------------------------------------------------------
    CHROME TAB GROUP VIEW — renders grouped tabs as cards with Chrome's
@@ -2960,6 +2992,7 @@ async function renderStaticDashboard() {
   // --- Render "Saved for Later" column ---
   await renderDeferredColumn();
   await renderSavedSessionsCard();
+  await renderBookmarksCard();
 
   const search = document.getElementById('openTabsSearch');
   if (search?.value.trim()) {

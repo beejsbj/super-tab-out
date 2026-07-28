@@ -14,6 +14,7 @@ const search = require(resolve(root, 'extension/services/search-service.js'));
 const metrics = require(resolve(root, 'extension/services/metrics-service.js'));
 const html = require(resolve(root, 'extension/services/html-service.js'));
 const tools = require(resolve(root, 'extension/services/tools-service.js'));
+const bookmarks = require(resolve(root, 'extension/services/bookmarks-service.js'));
 
 function makeFakeStorage(seed = {}) {
   const store = { ...seed };
@@ -47,6 +48,27 @@ function testUrlService() {
     assert.equal(urls.isRestorableUrl(unsafeUrl), false, unsafeUrl);
     assert.equal(urls.normalizeRestorableUrl(unsafeUrl), '', unsafeUrl);
   }
+}
+
+async function testBookmarksService() {
+  const bookmarkTree = [{
+    id: '0',
+    children: [{
+      id: '1',
+      title: 'Bookmarks bar',
+      children: [
+        { id: 'a', title: 'Useful link', url: 'https://example.test/useful' },
+        { id: 'b', title: 'Folder', children: [{ id: 'c', title: 'Nested', url: 'https://example.test/nested' }] },
+        { id: 'd', title: 'Unsafe', url: 'javascript:alert(1)' },
+      ],
+    }],
+  }];
+
+  global.chrome = { bookmarks: { async getTree() { return bookmarkTree; } } };
+  assert.deepEqual((await bookmarks.fetchBookmarkLinks()).map(item => ({ title: item.title, url: item.url, folder: item.folder })), [
+    { title: 'Useful link', url: 'https://example.test/useful', folder: 'Bookmarks bar' },
+    { title: 'Nested', url: 'https://example.test/nested', folder: 'Bookmarks bar / Folder' },
+  ]);
 }
 
 async function testTabsService() {
@@ -442,6 +464,7 @@ async function testToolsService() {
 }
 
 testUrlService();
+await testBookmarksService();
 await testTabsService();
 await testStorageService();
 testSearchService();

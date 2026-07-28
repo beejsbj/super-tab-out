@@ -25,6 +25,7 @@ const REQUIRED_ZIP_ENTRIES = [
   'services/html-service.js',
   'services/storage-service.js',
   'services/tabs-service.js',
+  'services/bookmarks-service.js',
   'services/search-service.js',
   'services/metrics-service.js',
   'services/tools-service.js',
@@ -57,7 +58,7 @@ function checkManifest() {
   if (manifest.manifest_version !== 3) fail('manifest.json must use manifest_version 3');
   if (!manifest.chrome_url_overrides?.newtab) fail('manifest.json must override the new tab page');
 
-  for (const permission of ['tabs', 'storage', 'tabGroups', 'sidePanel', 'sessions']) {
+  for (const permission of ['tabs', 'bookmarks', 'storage', 'tabGroups', 'sidePanel', 'sessions']) {
     if (!manifest.permissions?.includes(permission)) {
       fail(`manifest.json is missing permission: ${permission}`);
     }
@@ -131,6 +132,7 @@ function checkIndexScripts() {
     'services/html-service.js',
     'services/storage-service.js',
     'services/tabs-service.js',
+    'services/bookmarks-service.js',
     'services/search-service.js',
     'services/metrics-service.js',
     'services/tools-service.js',

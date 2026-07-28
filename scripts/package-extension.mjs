@@ -26,6 +26,7 @@ const PACKAGE_FILES = [
   'services/html-service.js',
   'services/storage-service.js',
   'services/tabs-service.js',
+  'services/bookmarks-service.js',
   'services/search-service.js',
   'services/metrics-service.js',
   'services/tools-service.js',

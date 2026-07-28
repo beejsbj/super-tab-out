@@ -353,6 +353,16 @@
           <span data-i18n="savedSessionsEmpty">No saved sessions yet.</span>
         </div>
       </section>
+
+      <section class="bookmarks-card" id="bookmarksCard" style="display:none">
+        <div class="section-header">
+          <h2>Bookmark inbox</h2>
+          <div class="section-line"></div>
+          <div class="section-count" id="bookmarksCount"></div>
+        </div>
+        <p class="bookmark-note">Read-only shortcuts from Chrome. Nothing is moved or changed.</p>
+        <div class="bookmark-list" id="bookmarksList"></div>
+      </section>
     </aside>
 
   </div><!-- end .dashboard-columns -->
@@ -460,6 +470,7 @@
 <script src="services/html-service.js"></script>
 <script src="services/storage-service.js"></script>
 <script src="services/tabs-service.js"></script>
+<script src="services/bookmarks-service.js"></script>
 <script src="services/search-service.js"></script>
 <script src="services/metrics-service.js"></script>
 <script src="services/tools-service.js"></script>

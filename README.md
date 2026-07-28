@@ -44,6 +44,7 @@ Release notes are tracked in [`CHANGELOG.md`](./CHANGELOG.md).
 - **Pinned tabs are protected**: pinned tabs are excluded from cards, counts, duplicate cleanup, and bulk-close actions.
 - **One-click duplicate cleanup**: repeated URLs are marked and can be cleaned while keeping one copy.
 - **Save for later**: stash a tab into a local checklist before closing it.
+- **Bookmark inbox**: see a compact, read-only slice of Chrome bookmarks beside the tab triage rail; the extension never moves or edits bookmarks.
 - **Auto-refresh**: tab open, close, navigation, and group changes refresh the dashboard automatically.
 - **Bilingual UI**: switch between English and Simplified Chinese from Settings.
 - **More themes, easier switching**: choose from 14 built-in palettes in the lightweight Settings panel.
@@ -286,6 +287,7 @@ The extension currently requests:
 | Permission | Why it is needed |
 | --- | --- |
 | `tabs` | Read, focus, close, and group open tabs |
+| `bookmarks` | Read a small bookmark inbox for link triage; never create, move, or delete bookmarks |
 | `storage` | Persist saved tabs, sessions, stats, privacy settings, and view mode |
 | `tabGroups` | Read, render, create, update, collapse, and ungroup Chrome Tab Groups |
 | `sidePanel` | Show the Side Panel command center |
