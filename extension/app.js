@@ -37,6 +37,10 @@ let openTabs = [];
 // when the user is in 'group' view mode; safe to leave empty otherwise.
 let tabGroupsList = [];
 
+// Chrome window metadata — the board treats each live window as its
+// top-level column and Chrome remains the source of truth.
+let windowsList = [];
+
 // Browser-builtin new-tab URLs across Chromium variants (Chrome, Edge,
 // Brave). The extension page URL itself is also treated as Tab Out.
 const BROWSER_NEWTAB_URLS = [
@@ -227,6 +231,16 @@ async function fetchTabGroups() {
   } catch {
     // tabGroups permission missing or API unavailable — ignore.
     tabGroupsList = [];
+  }
+}
+
+async function fetchWindows() {
+  try {
+    windowsList = TabsService?.fetchWindows
+      ? await TabsService.fetchWindows()
+      : await chrome.windows.getAll({ populate: false });
+  } catch {
+    windowsList = [];
   }
 }
 
@@ -614,9 +628,16 @@ const UI_COPY = {
     homepages: 'Homepages',
     localFiles: 'Local files',
     tabsLabel: 'tabs',
-    viewGroups: 'Groups',
+    viewGroups: 'Board',
     viewDomains: 'Domains',
     viewModeLabel: 'View mode',
+    windowLabel: ({ count }) => `Window ${count}`,
+    currentWindow: 'current',
+    windowCount: ({ count }) => `${count} window${count !== 1 ? 's' : ''}`,
+    dragTab: ({ title }) => `Drag ${title} to another window or group`,
+    dropIntoGroup: ({ title }) => `Move tab into ${title}`,
+    dropToUngroup: 'Drop here to move into this window without a group',
+    emptyDropTarget: 'Drop tabs here',
     notGrouped: 'To sort',
     ungroupedInboxHint: 'Ungrouped tabs',
     smartGroup: 'Smart group',
@@ -687,6 +708,8 @@ const UI_COPY = {
     toastGroupUpdated: 'Updated Chrome tab group',
     toastGroupUpdateFailed: 'Could not update Chrome tab group',
     toastGroupSaved: 'Saved group as a session',
+    toastTabMoved: ({ title }) => `Moved tab to ${title}`,
+    toastTabMoveFailed: 'Could not move that tab',
     toastSessionSaved: 'Session saved',
     toastSessionRestored: 'Session restored as a Chrome tab group',
     toastSessionRestoreFailed: 'Could not restore saved session',
@@ -776,9 +799,16 @@ const UI_COPY = {
     homepages: '首页',
     localFiles: '本地文件',
     tabsLabel: '标签页',
-    viewGroups: '分组',
+    viewGroups: '看板',
     viewDomains: '域名',
     viewModeLabel: '视图模式',
+    windowLabel: ({ count }) => `窗口 ${count}`,
+    currentWindow: '当前',
+    windowCount: ({ count }) => `${count} 个窗口`,
+    dragTab: ({ title }) => `拖动「${title}」到其他窗口或分组`,
+    dropIntoGroup: ({ title }) => `将标签页移入「${title}」`,
+    dropToUngroup: '拖到这里，移入此窗口并取消分组',
+    emptyDropTarget: '将标签页拖到这里',
     notGrouped: '待整理',
     ungroupedInboxHint: '未归组标签页',
     smartGroup: '智能分组',
@@ -849,6 +879,8 @@ const UI_COPY = {
     toastGroupUpdated: '已更新 Chrome 标签分组',
     toastGroupUpdateFailed: '无法更新 Chrome 标签分组',
     toastGroupSaved: '已将分组保存为会话',
+    toastTabMoved: ({ title }) => `已将标签页移至「${title}」`,
+    toastTabMoveFailed: '无法移动该标签页',
     toastSessionSaved: '会话已保存',
     toastSessionRestored: '已恢复为 Chrome 标签分组',
     toastSessionRestoreFailed: '无法恢复保存的会话',
@@ -2535,17 +2567,73 @@ async function updateChromeTabGroup(groupId, options) {
 }
 
 function buildViewToggle(activeView) {
-  if (tabGroupsList.length === 0) return '';
   return `<span class="view-toggle" role="tablist" aria-label="${escapeHtml(tr('viewModeLabel'))}">` +
     `<button class="toggle-pill${activeView === 'group'  ? ' active' : ''}" data-action="switch-view" data-view="group">${escapeHtml(tr('viewGroups'))}</button>` +
     `<button class="toggle-pill${activeView === 'domain' ? ' active' : ''}" data-action="switch-view" data-view="domain">${escapeHtml(tr('viewDomains'))}</button>` +
     `</span>&nbsp;&nbsp;`;
 }
 
+function renderBoardTabRow(tab, urlCounts = {}, extraClass = '') {
+  const label = cleanTitle(smartTitle(stripTitleNoise(tab.title || ''), tab.url), '');
+  const count = urlCounts[tab.url] || 1;
+  const dupeTag = count > 1 ? ` <span class="chip-dupe-badge">(${count}x)</span>` : '';
+  const chipClass = count > 1 ? ' chip-has-dupes' : '';
+  const safeUrl = escapeHtml(tab.url || '');
+  const safeTitle = escapeHtml(label);
+  const domain = getUngroupedDomainKey(tab);
+  const faviconUrl = faviconUrlFor(domain);
+
+  return `<article class="page-chip board-tab-row clickable${chipClass}${extraClass ? ` ${extraClass}` : ''}"
+                  data-action="focus-tab-id"
+                  data-tab-id="${tab.id}"
+                  data-tab-url="${safeUrl}"
+                  title="${safeTitle}"
+                  role="button"
+                  tabindex="0"
+                  aria-label="${escapeHtml(tr('focusThisTab'))}: ${safeTitle}">
+    <button class="tab-drag-handle"
+            type="button"
+            draggable="true"
+            data-action="drag-tab"
+            data-drag-tab-id="${tab.id}"
+            aria-label="${escapeHtml(tr('dragTab', { title: label }))}"
+            title="${escapeHtml(tr('dragTab', { title: label }))}">
+      <span aria-hidden="true">⠿</span>
+    </button>
+    ${faviconUrl ? `<img class="chip-favicon" src="${escapeHtml(faviconUrl)}" alt="" data-favicon-domain="${escapeHtml(domain)}">` : ''}
+    <span class="chip-text">${safeTitle}</span>${dupeTag}
+    <div class="chip-actions">
+      <button class="chip-action chip-save" data-action="defer-single-tab-id" data-tab-id="${tab.id}" data-tab-url="${safeUrl}" data-tab-title="${safeTitle}" title="${escapeHtml(tr('saveForLater'))}" aria-label="${escapeHtml(tr('saveForLater'))}: ${safeTitle}">
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M17.593 3.322c1.1.128 1.907 1.077 1.907 2.185V21L12 17.25 4.5 21V5.507c0-1.108.806-2.057 1.907-2.185a48.507 48.507 0 0 1 11.186 0Z" /></svg>
+      </button>
+      <button class="chip-action chip-close" data-action="close-single-tab-id" data-tab-id="${tab.id}" title="${escapeHtml(tr('closeThisTab'))}" aria-label="${escapeHtml(tr('closeThisTab'))}: ${safeTitle}">
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" /></svg>
+      </button>
+    </div>
+  </article>`;
+}
+
+function renderBoardDomainBlocks(tabs) {
+  const urlCounts = {};
+  for (const tab of tabs) urlCounts[tab.url] = (urlCounts[tab.url] || 0) + 1;
+
+  return getUngroupedDomainGroups(tabs).map(group => `
+    <section class="board-domain-block" data-domain="${escapeHtml(group.domain)}">
+      <header class="board-domain-header">
+        <span class="board-domain-name">${escapeHtml(group.label)}</span>
+        <span class="board-domain-count">${group.tabs.length}</span>
+      </header>
+      <div class="board-domain-tabs">
+        ${group.tabs.map(tab => renderBoardTabRow(tab, urlCounts)).join('')}
+      </div>
+    </section>`).join('');
+}
+
 function renderTabGroupCard(groupInfo, tabs) {
   const color    = CHROME_GROUP_COLORS[groupInfo.color] || '#5f6368';
   const name     = groupInfo.title || tr('unnamedGroup');
   const tabCount = tabs.length;
+  const windowId = Number.isFinite(groupInfo.windowId) ? groupInfo.windowId : tabs[0]?.windowId;
 
   const urlCounts = {};
   for (const tab of tabs) urlCounts[tab.url] = (urlCounts[tab.url] || 0) + 1;
@@ -2553,42 +2641,7 @@ function renderTabGroupCard(groupInfo, tabs) {
   const hasDupes    = dupeUrls.length > 0;
   const totalExtras = dupeUrls.reduce((s, [, c]) => s + c - 1, 0);
 
-  const seen = new Set();
-  const uniqueTabs = [];
-  for (const tab of tabs) {
-    if (!seen.has(tab.url)) { seen.add(tab.url); uniqueTabs.push(tab); }
-  }
-
-  const visibleTabs = uniqueTabs.slice(0, 8);
-  const extraCount  = uniqueTabs.length - visibleTabs.length;
-
-  const pageChips = visibleTabs.map(tab => {
-    let label = cleanTitle(smartTitle(stripTitleNoise(tab.title || ''), tab.url), '');
-    try {
-      const parsed = new URL(tab.url);
-      if (parsed.hostname === 'localhost' && parsed.port) label = `${parsed.port} ${label}`;
-    } catch {}
-    const count     = urlCounts[tab.url];
-    const dupeTag   = count > 1 ? ` <span class="chip-dupe-badge">(${count}x)</span>` : '';
-    const chipClass = count > 1 ? ' chip-has-dupes' : '';
-    const safeUrl   = escapeHtml(tab.url || '');
-    const safeTitle = escapeHtml(label);
-    let domain = '';
-    try { domain = new URL(tab.url).hostname; } catch {}
-    const faviconUrl = faviconUrlFor(domain);
-    return `<div class="page-chip clickable${chipClass}" data-action="focus-tab" data-tab-url="${safeUrl}" title="${safeTitle}" role="button" tabindex="0" aria-label="${escapeHtml(tr('focusThisTab'))}: ${safeTitle}">
-      ${faviconUrl ? `<img class="chip-favicon" src="${escapeHtml(faviconUrl)}" alt="" data-favicon-domain="${escapeHtml(domain)}">` : ''}
-      <span class="chip-text">${escapeHtml(label)}</span>${dupeTag}
-      <div class="chip-actions">
-        <button class="chip-action chip-save" data-action="defer-single-tab" data-tab-url="${safeUrl}" data-tab-title="${safeTitle}" title="${escapeHtml(tr('saveForLater'))}" aria-label="${escapeHtml(tr('saveForLater'))}: ${safeTitle}">
-          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M17.593 3.322c1.1.128 1.907 1.077 1.907 2.185V21L12 17.25 4.5 21V5.507c0-1.108.806-2.057 1.907-2.185a48.507 48.507 0 0 1 11.186 0Z" /></svg>
-        </button>
-        <button class="chip-action chip-close" data-action="close-single-tab" data-tab-url="${safeUrl}" title="${escapeHtml(tr('closeThisTab'))}" aria-label="${escapeHtml(tr('closeThisTab'))}: ${safeTitle}">
-          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" /></svg>
-        </button>
-      </div>
-    </div>`;
-  }).join('') + (extraCount > 0 ? buildOverflowChips(uniqueTabs.slice(8), urlCounts) : '');
+  const pageChips = renderBoardDomainBlocks(tabs);
 
   const tabBadge = `<span class="open-tabs-badge">${ICONS.tabs} ${escapeHtml(tr('tabsOpen', { count: tabCount }))}</span>`;
   const dupeBadge = hasDupes
@@ -2636,7 +2689,12 @@ function renderTabGroupCard(groupInfo, tabs) {
   }
 
   return `
-    <div class="mission-card group-card" data-group-id="group-${groupInfo.id}" style="--group-color:${color}">
+    <div class="mission-card group-card tab-drop-target"
+         data-group-id="group-${groupInfo.id}"
+         data-drop-window-id="${windowId}"
+         data-drop-group-id="${groupInfo.id}"
+         aria-label="${escapeHtml(tr('dropIntoGroup', { title: name }))}"
+         style="--group-color:${color}">
       <div class="status-bar" style="background:${color}"></div>
       <div class="mission-content">
         <div class="mission-top">
@@ -2684,72 +2742,40 @@ function getUngroupedDomainGroups(ungroupedTabs) {
 }
 
 function renderUngroupedTabRow(tab, urlCounts) {
-  const label = cleanTitle(smartTitle(stripTitleNoise(tab.title || ''), tab.url), '');
-  const count = urlCounts[tab.url] || 1;
-  const dupeTag = count > 1 ? ` <span class="chip-dupe-badge">(${count}x)</span>` : '';
-  const chipClass = count > 1 ? ' chip-has-dupes' : '';
-  const safeUrl = escapeHtml(tab.url || '');
-  const safeTitle = escapeHtml(label);
-  const domain = getUngroupedDomainKey(tab);
-  const safeDomain = escapeHtml(domain);
-  const faviconUrl = faviconUrlFor(domain);
-
-  return `<article class="page-chip ungrouped-row clickable${chipClass}" data-action="focus-tab" data-tab-url="${safeUrl}" title="${safeTitle}" role="button" tabindex="0" aria-label="${escapeHtml(tr('focusThisTab'))}: ${safeTitle}">
-    ${faviconUrl ? `<img class="chip-favicon" src="${escapeHtml(faviconUrl)}" alt="" data-favicon-domain="${safeDomain}">` : ''}
-    <span class="ungrouped-row-main">
-      <span class="chip-text ungrouped-title">${safeTitle}</span>${dupeTag}
-      <span class="ungrouped-domain">${safeDomain}</span>
-    </span>
-    <div class="chip-actions">
-      <button class="chip-action chip-save" data-action="defer-single-tab" data-tab-url="${safeUrl}" data-tab-title="${safeTitle}" title="${escapeHtml(tr('saveForLater'))}" aria-label="${escapeHtml(tr('saveForLater'))}: ${safeTitle}">
-        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M17.593 3.322c1.1.128 1.907 1.077 1.907 2.185V21L12 17.25 4.5 21V5.507c0-1.108.806-2.057 1.907-2.185a48.507 48.507 0 0 1 11.186 0Z" /></svg>
-      </button>
-      <button class="chip-action chip-close" data-action="close-single-tab" data-tab-url="${safeUrl}" title="${escapeHtml(tr('closeThisTab'))}" aria-label="${escapeHtml(tr('closeThisTab'))}: ${safeTitle}">
-        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" /></svg>
-      </button>
-    </div>
-  </article>`;
+  return renderBoardTabRow(tab, urlCounts, 'ungrouped-row');
 }
 
-function renderUngroupedSection(ungroupedTabs) {
+function renderUngroupedSection(ungroupedTabs, windowId) {
   const urlCounts = {};
   for (const tab of ungroupedTabs) urlCounts[tab.url] = (urlCounts[tab.url] || 0) + 1;
 
-  const seen = new Set();
-  const uniqueTabs = [];
-  for (const tab of ungroupedTabs) {
-    if (!seen.has(tab.url)) { seen.add(tab.url); uniqueTabs.push(tab); }
-  }
-
-  const domainGroups = getUngroupedDomainGroups(uniqueTabs);
+  const domainGroups = getUngroupedDomainGroups(ungroupedTabs);
   const smartGroupable = domainGroups.filter(group => group.tabs.length >= 2);
-  const groupedBlocks = smartGroupable.map(group => `
+  const groupedBlocks = domainGroups.map(group => `
     <div class="ungrouped-domain-block" data-ungrouped-domain="${escapeHtml(group.domain)}">
       <div class="ungrouped-domain-header">
         <span class="ungrouped-domain-name">${escapeHtml(group.label)}</span>
         <span class="ungrouped-domain-count">${escapeHtml(tr('tabsOpen', { count: group.tabs.length }))}</span>
-        <button class="action-btn ungrouped-domain-action" data-action="create-ungrouped-domain-group" data-domain-key="${escapeHtml(group.domain)}">
-          ${escapeHtml(tr('createGroupFromDomain'))}
-        </button>
+        ${group.tabs.length >= 2
+          ? `<button class="action-btn ungrouped-domain-action" data-action="create-ungrouped-domain-group" data-window-id="${windowId}" data-domain-key="${escapeHtml(group.domain)}">
+              ${escapeHtml(tr('createGroupFromDomain'))}
+            </button>`
+          : ''}
       </div>
       ${group.tabs.map(tab => renderUngroupedTabRow(tab, urlCounts)).join('')}
     </div>`).join('');
 
-  const smartDomains = new Set(smartGroupable.map(group => group.domain));
-  const looseRows = domainGroups
-    .filter(group => !smartDomains.has(group.domain))
-    .flatMap(group => group.tabs)
-    .map(tab => renderUngroupedTabRow(tab, urlCounts))
-    .join('');
-
   const smartGroupButton = smartGroupable.length > 0
-    ? `<button class="action-btn primary" data-action="smart-group-ungrouped" title="${escapeHtml(tr('smartGroupHint'))}">
+    ? `<button class="action-btn primary" data-action="smart-group-ungrouped" data-window-id="${windowId}" title="${escapeHtml(tr('smartGroupHint'))}">
         ${escapeHtml(tr('smartGroup'))}
       </button>`
     : '';
 
   return `
-    <div class="ungrouped-section">
+    <div class="ungrouped-section tab-drop-target"
+         data-drop-window-id="${windowId}"
+         data-drop-group-id="-1"
+         aria-label="${escapeHtml(tr('dropToUngroup'))}">
       <div class="ungrouped-header">
         <div class="ungrouped-heading">
           <span class="ungrouped-label">${escapeHtml(tr('notGrouped'))}</span>
@@ -2758,18 +2784,19 @@ function renderUngroupedSection(ungroupedTabs) {
         </div>
         <div class="ungrouped-actions">
           ${smartGroupButton}
-          <button class="action-btn save-tabs" data-action="save-ungrouped-session">
+          <button class="action-btn save-tabs" data-action="save-ungrouped-session" data-window-id="${windowId}"${ungroupedTabs.length === 0 ? ' hidden' : ''}>
             ${escapeHtml(tr('saveAll'))}
           </button>
-          <button class="action-btn close-tabs" data-action="close-ungrouped-tabs">
+          <button class="action-btn close-tabs" data-action="close-ungrouped-tabs" data-window-id="${windowId}"${ungroupedTabs.length === 0 ? ' hidden' : ''}>
             ${ICONS.close}
             ${escapeHtml(tr('closeAllTabs', { count: ungroupedTabs.length }))}
           </button>
         </div>
       </div>
       <div class="ungrouped-chips">
-        ${groupedBlocks}
-        ${looseRows ? `<div class="ungrouped-loose-list">${looseRows}</div>` : ''}
+        ${ungroupedTabs.length > 0
+          ? groupedBlocks
+          : `<div class="tab-drop-empty">${escapeHtml(tr('emptyDropTarget'))}</div>`}
       </div>
     </div>`;
 }
@@ -2781,35 +2808,71 @@ async function renderGroupView() {
   const openTabsSectionTitle = document.getElementById('openTabsSectionTitle');
   if (!openTabsSection) return;
 
-  const realTabs      = getRealTabs();
-  const groupedTabs   = realTabs.filter(t => t.groupId >= 0);
-  const ungroupedTabs = realTabs.filter(t => t.groupId === -1);
+  const realTabs = getRealTabs();
+  const windowMetadata = new Map(windowsList.map(windowInfo => [windowInfo.id, windowInfo]));
+  const windowIds = Array.from(new Set([
+    ...windowsList
+      .filter(windowInfo => !windowInfo.type || windowInfo.type === 'normal')
+      .map(windowInfo => windowInfo.id),
+    ...realTabs.map(tab => tab.windowId),
+  ].filter(Number.isFinite)));
+  // Keep columns stable while focus changes; the current window gets a badge
+  // instead of jumping to a new position.
+  const sortedWindowIds = windowIds.sort((a, b) => a - b);
 
-  const groupData = new Map();
-  for (const g of tabGroupsList) groupData.set(g.id, { groupInfo: g, tabs: [] });
-  for (const tab of groupedTabs) {
-    if (groupData.has(tab.groupId)) groupData.get(tab.groupId).tabs.push(tab);
-  }
+  const groupMetadata = new Map(tabGroupsList.map(group => [group.id, group]));
+  let groupCount = 0;
+  let ungroupedCount = 0;
 
-  // Sort groups by the minimum tab.index within each group (Chrome's own visual order).
-  const sortedGroups = Array.from(groupData.values())
-    .filter(g => g.tabs.length > 0)
-    .sort((a, b) => Math.min(...a.tabs.map(t => t.index)) - Math.min(...b.tabs.map(t => t.index)));
+  const boardHtml = sortedWindowIds.map((windowId, index) => {
+    const windowTabs = realTabs
+      .filter(tab => tab.windowId === windowId)
+      .sort((a, b) => a.index - b.index);
+    const groupedTabs = windowTabs.filter(tab => tab.groupId >= 0);
+    const ungroupedTabs = windowTabs.filter(tab => tab.groupId === -1);
+    ungroupedCount += ungroupedTabs.length;
 
-  const groupCount = sortedGroups.length;
+    const groupData = new Map();
+    for (const tab of groupedTabs) {
+      const groupInfo = groupMetadata.get(tab.groupId);
+      if (!groupInfo) continue;
+      if (!groupData.has(tab.groupId)) groupData.set(tab.groupId, { groupInfo, tabs: [] });
+      groupData.get(tab.groupId).tabs.push(tab);
+    }
+
+    const sortedGroups = Array.from(groupData.values())
+      .sort((a, b) => Math.min(...a.tabs.map(tab => tab.index)) - Math.min(...b.tabs.map(tab => tab.index)));
+    groupCount += sortedGroups.length;
+
+    const windowInfo = windowMetadata.get(windowId);
+    const windowName = tr('windowLabel', { count: index + 1 });
+    const currentBadge = windowInfo?.focused
+      ? `<span class="window-current-badge">${escapeHtml(tr('currentWindow'))}</span>`
+      : '';
+
+    return `<section class="window-column" data-window-id="${windowId}">
+      <header class="window-column-header">
+        <span class="window-column-title">${escapeHtml(windowName)}</span>
+        ${currentBadge}
+        <span class="window-tab-count">${escapeHtml(tr('tabsOpen', { count: windowTabs.length }))}</span>
+      </header>
+      <div class="window-group-stack">
+        ${sortedGroups.map(({ groupInfo, tabs }) => renderTabGroupCard(groupInfo, tabs)).join('')}
+        ${renderUngroupedSection(ungroupedTabs, windowId)}
+      </div>
+    </section>`;
+  }).join('');
 
   if (openTabsSectionTitle) openTabsSectionTitle.textContent = tr('openTabsTitle');
-  const summary = tr('groupCount', { count: groupCount }) +
-                  (ungroupedTabs.length > 0 ? ` · ${tr('ungroupedCount', { count: ungroupedTabs.length })}` : '');
+  const summary = `${tr('windowCount', { count: sortedWindowIds.length })} · ${tr('groupCount', { count: groupCount })}` +
+                  (ungroupedCount > 0 ? ` · ${tr('ungroupedCount', { count: ungroupedCount })}` : '');
   openTabsSectionCount.innerHTML = `${buildViewToggle('group')}${summary} &nbsp;&middot;&nbsp; ` +
     `<button class="action-btn close-tabs" data-action="close-all-open-tabs" style="font-size:11px;padding:3px 10px;">` +
     `${ICONS.close} ${escapeHtml(tr('closeAllTabs', { count: realTabs.length }))}</button>`;
 
-  const html = sortedGroups.map(({ groupInfo, tabs }) => renderTabGroupCard(groupInfo, tabs)).join('') +
-               (ungroupedTabs.length > 0 ? renderUngroupedSection(ungroupedTabs) : '');
-
-  if (sortedGroups.length > 0 || ungroupedTabs.length > 0) {
-    openTabsMissionsEl.innerHTML = html;
+  openTabsMissionsEl.classList.add('tab-board');
+  if (sortedWindowIds.length > 0) {
+    openTabsMissionsEl.innerHTML = boardHtml;
     openTabsSection.style.display = 'block';
   } else {
     openTabsSection.style.display = 'none';
@@ -2947,6 +3010,7 @@ async function renderDomainView(realTabs) {
   const openTabsMissionsEl   = document.getElementById('openTabsMissions');
   const openTabsSectionCount = document.getElementById('openTabsSectionCount');
   const openTabsSectionTitle = document.getElementById('openTabsSectionTitle');
+  openTabsMissionsEl?.classList.remove('tab-board');
 
   if (domainGroups.length > 0 && openTabsSection) {
     if (openTabsSectionTitle) openTabsSectionTitle.textContent = tr('openTabsTitle');
@@ -2965,14 +3029,14 @@ async function renderStaticDashboard() {
   if (greetingEl) greetingEl.textContent = getGreeting();
   if (dateEl)     dateEl.textContent     = getDateDisplay();
 
-  // --- Fetch tabs + Chrome tab groups in parallel ---
-  await Promise.all([fetchOpenTabs(), fetchTabGroups()]);
+  // --- Fetch tabs, native groups, and windows in parallel ---
+  await Promise.all([fetchOpenTabs(), fetchTabGroups(), fetchWindows()]);
   const realTabs = getRealTabs();
 
-  // --- Pick view mode. When no Chrome groups exist, force domain view
-  //     (the toggle pill is hidden in that case via buildViewToggle). ---
+  // --- Pick view mode. The board is useful even without native groups
+  //     because every Chrome window still has an ungrouped drop lane. ---
   const stored  = await loadViewMode();
-  const view    = (tabGroupsList.length === 0) ? 'domain' : stored;
+  const view    = stored;
 
   if (view === 'group') {
     await renderGroupView();
@@ -3048,6 +3112,11 @@ document.addEventListener('click', async (e) => {
   const action = actionEl.dataset.action;
   const isGroupMenuColorAction = action === 'toggle-group-color-picker' || action === 'set-group-color';
   if (actionEl.closest('.group-action-menu') && !isGroupMenuColorAction) closeGroupActionMenus();
+
+  // The drag handle is intentionally not a click command. Keeping it as a
+  // button makes the affordance focusable and discoverable without jumping
+  // to the tab when the user presses it.
+  if (action === 'drag-tab') return;
 
   // ---- Switch settings panel section ----
   if (action === 'set-settings-view') {
@@ -3147,6 +3216,20 @@ document.addEventListener('click', async (e) => {
   }
 
   // ---- Focus a specific tab ----
+  if (action === 'focus-tab-id') {
+    const tabId = Number(actionEl.dataset.tabId);
+    if (!Number.isFinite(tabId)) return;
+    if (TabsService?.focusTabById) {
+      await TabsService.focusTabById(tabId);
+    } else {
+      const tab = await chrome.tabs.get(tabId);
+      await chrome.tabs.update(tabId, { active: true });
+      await chrome.windows.update(tab.windowId, { focused: true });
+    }
+    return;
+  }
+
+  // ---- Focus a domain-view row by URL ----
   if (action === 'focus-tab') {
     const tabUrl = actionEl.dataset.tabUrl;
     if (tabUrl) await focusTab(tabUrl);
@@ -3154,6 +3237,18 @@ document.addEventListener('click', async (e) => {
   }
 
   // ---- Close a single tab ----
+  if (action === 'close-single-tab-id') {
+    e.stopPropagation();
+    const tabId = Number(actionEl.dataset.tabId);
+    if (!Number.isFinite(tabId)) return;
+    await closeTabsByIds([tabId]);
+    playCloseSound();
+    showToast(tr('toastTabClosed'));
+    await recordActivity({ type: 'closed', count: 1 });
+    return;
+  }
+
+  // ---- Close every copy represented by a domain-view URL row ----
   if (action === 'close-single-tab') {
     e.stopPropagation(); // don't trigger parent chip's focus-tab
     const tabUrl = actionEl.dataset.tabUrl;
@@ -3198,6 +3293,29 @@ document.addEventListener('click', async (e) => {
   }
 
   // ---- Save a single tab for later (then close it) ----
+  if (action === 'defer-single-tab-id') {
+    e.stopPropagation();
+    const tabId = Number(actionEl.dataset.tabId);
+    const tabUrl = actionEl.dataset.tabUrl;
+    const tabTitle = actionEl.dataset.tabTitle || tabUrl;
+    if (!Number.isFinite(tabId) || !tabUrl) return;
+
+    try {
+      await saveTabForLater({ url: tabUrl, title: tabTitle });
+      await closeTabsByIds([tabId]);
+    } catch (err) {
+      console.error('[tab-out] Failed to save tab:', err);
+      showToast(tr('toastSaveFailed'));
+      return;
+    }
+
+    showToast(tr('toastSavedForLater'));
+    await recordActivity({ type: 'saved', count: 1 });
+    await renderDeferredColumn();
+    return;
+  }
+
+  // ---- Save every copy represented by a domain-view URL row ----
   if (action === 'defer-single-tab') {
     e.stopPropagation();
     const tabUrl   = actionEl.dataset.tabUrl;
@@ -3429,7 +3547,10 @@ document.addEventListener('click', async (e) => {
 
   // ---- Save all ungrouped tabs as one local session ----
   if (action === 'save-ungrouped-session') {
-    const ungroupedTabs = getRealTabs().filter(t => t.groupId === -1);
+    const windowId = Number(actionEl.dataset.windowId);
+    const ungroupedTabs = getRealTabs().filter(t =>
+      t.groupId === -1 && (!Number.isFinite(windowId) || t.windowId === windowId)
+    );
     if (ungroupedTabs.length === 0) return;
     actionEl.disabled = true;
     await saveTabsAsSession(ungroupedTabs, tr('notGrouped'));
@@ -3440,7 +3561,10 @@ document.addEventListener('click', async (e) => {
 
   // ---- Close all ungrouped tabs ----
   if (action === 'close-ungrouped-tabs') {
-    const ungroupedTabs = getRealTabs().filter(t => t.groupId === -1);
+    const windowId = Number(actionEl.dataset.windowId);
+    const ungroupedTabs = getRealTabs().filter(t =>
+      t.groupId === -1 && (!Number.isFinite(windowId) || t.windowId === windowId)
+    );
     const tabIds = ungroupedTabs.map(tab => tab.id).filter(Boolean);
     if (tabIds.length === 0) return;
     await closeTabsByIds(tabIds);
@@ -3453,7 +3577,10 @@ document.addEventListener('click', async (e) => {
 
   // ---- Smart group ungrouped tabs by domain ----
   if (action === 'smart-group-ungrouped') {
-    const ungroupedTabs = getRealTabs().filter(t => t.groupId === -1);
+    const windowId = Number(actionEl.dataset.windowId);
+    const ungroupedTabs = getRealTabs().filter(t =>
+      t.groupId === -1 && (!Number.isFinite(windowId) || t.windowId === windowId)
+    );
     const groups = getUngroupedDomainGroups(ungroupedTabs).filter(group => group.tabs.length >= 2);
     if (groups.length === 0) {
       showToast(tr('toastSmartGroupNone'));
@@ -3478,7 +3605,10 @@ document.addEventListener('click', async (e) => {
   // ---- Create one Chrome tab group from an ungrouped domain cluster ----
   if (action === 'create-ungrouped-domain-group') {
     const domainKey = actionEl.dataset.domainKey;
-    const group = getUngroupedDomainGroups(getRealTabs().filter(t => t.groupId === -1))
+    const windowId = Number(actionEl.dataset.windowId);
+    const group = getUngroupedDomainGroups(getRealTabs().filter(t =>
+      t.groupId === -1 && (!Number.isFinite(windowId) || t.windowId === windowId)
+    ))
       .find(item => item.domain === domainKey);
     if (!group) return;
     const tabIds = group.tabs.map(tab => tab.id).filter(Boolean);
@@ -3707,7 +3837,7 @@ function resetDashboardSearch() {
   const missionsEl = document.getElementById('openTabsMissions');
   if (missionsEl) {
     missionsEl.classList.remove('is-searching');
-    missionsEl.querySelectorAll('.mission-card, .page-chip, .ungrouped-section').forEach(el => {
+    missionsEl.querySelectorAll('.mission-card, .page-chip, .ungrouped-section, .board-domain-block, .window-column').forEach(el => {
       el.classList.remove('search-hidden');
     });
     missionsEl.querySelectorAll('.page-chips-overflow').forEach(overflow => {
@@ -3801,6 +3931,19 @@ function applyOpenTabSearchResults(results, query) {
     });
     section.classList.toggle('search-hidden', !anyVisible);
     if (anyVisible) highlightTextElement(section.querySelector('.ungrouped-label'), query);
+  });
+
+  missionsEl.querySelectorAll('.board-domain-block').forEach(domainBlock => {
+    const anyVisible = !!domainBlock.querySelector('.page-chip:not(.search-hidden)');
+    domainBlock.classList.toggle('search-hidden', !anyVisible);
+    if (anyVisible) highlightTextElement(domainBlock.querySelector('.board-domain-name'), query);
+  });
+
+  missionsEl.querySelectorAll('.window-column').forEach(windowColumn => {
+    const anyVisible = !!windowColumn.querySelector(
+      '.mission-card:not(.search-hidden), .ungrouped-section:not(.search-hidden)'
+    );
+    windowColumn.classList.toggle('search-hidden', !anyVisible);
   });
 }
 
@@ -4352,6 +4495,122 @@ async function initPrivacyMode() {
   }
 }
 
+/* ----------------------------------------------------------------
+   TAB BOARD DRAG + DROP
+
+   Chrome is authoritative: every drop calls the real tabs/tabGroups APIs,
+   then the board re-reads browser state. Domains are visual clusters only;
+   the valid mutation targets are windows and native Chrome tab groups.
+   ---------------------------------------------------------------- */
+function clearBoardDragState() {
+  document.querySelectorAll('.board-tab-row.is-dragging').forEach(row => {
+    row.classList.remove('is-dragging');
+  });
+  document.querySelectorAll('.tab-drop-target.is-drag-over').forEach(target => {
+    target.classList.remove('is-drag-over');
+  });
+}
+
+function getWindowBoardLabel(windowId) {
+  return document.querySelector(`.window-column[data-window-id="${windowId}"] .window-column-title`)
+    ?.textContent
+    ?.trim() || tr('windowLabel', { count: windowId });
+}
+
+async function moveBoardTab(tabId, targetWindowId, targetGroupId) {
+  const sourceTab = openTabs.find(tab => tab.id === tabId);
+  if (!sourceTab || !TabsService?.moveTabs) {
+    showToast(tr('toastTabMoveFailed'));
+    return;
+  }
+  if (sourceTab.windowId === targetWindowId && sourceTab.groupId === targetGroupId) return;
+
+  const sourceGroup = tabGroupsList.find(group => group.id === sourceTab.groupId);
+  const targetGroup = tabGroupsList.find(group => group.id === targetGroupId);
+  const targetLabel = targetGroup?.title || (
+    targetGroupId >= 0 ? tr('unnamedGroup') : `${getWindowBoardLabel(targetWindowId)} · ${tr('notGrouped')}`
+  );
+
+  try {
+    await TabsService.moveTabs([tabId], {
+      windowId: targetWindowId,
+      groupId: targetGroupId,
+      index: -1,
+    });
+    await renderDashboard();
+    showToast(tr('toastTabMoved', { title: targetLabel }), {
+      actionLabel: tr('undo'),
+      onAction: async () => {
+        try {
+          await TabsService.moveTabs([tabId], {
+            windowId: sourceTab.windowId,
+            groupId: sourceTab.groupId,
+            index: sourceTab.index,
+          });
+        } catch {
+          // Moving the last tab out deletes its old native group. Recreate
+          // that group during undo using the metadata captured before moving.
+          await TabsService.moveTabs([tabId], {
+            windowId: sourceTab.windowId,
+            groupId: -1,
+            index: sourceTab.index,
+          });
+          if (sourceGroup) {
+            await TabsService.groupTabs([tabId], {
+              title: sourceGroup.title || '',
+              color: sourceGroup.color || 'grey',
+              collapsed: sourceGroup.collapsed === true,
+            });
+          }
+        }
+        await renderDashboard();
+      },
+    });
+  } catch (err) {
+    console.error('[tab-out] Failed to move tab:', err);
+    showToast(tr('toastTabMoveFailed'));
+    await renderDashboard();
+  }
+}
+
+document.addEventListener('dragstart', (e) => {
+  const handle = e.target instanceof Element ? e.target.closest('.tab-drag-handle') : null;
+  if (!handle) return;
+  const tabId = Number(handle.dataset.dragTabId);
+  if (!Number.isFinite(tabId) || !e.dataTransfer) {
+    e.preventDefault();
+    return;
+  }
+  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.setData('text/plain', String(tabId));
+  handle.closest('.board-tab-row')?.classList.add('is-dragging');
+});
+
+document.addEventListener('dragover', (e) => {
+  const target = e.target instanceof Element ? e.target.closest('.tab-drop-target') : null;
+  if (!target || !e.dataTransfer) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  document.querySelectorAll('.tab-drop-target.is-drag-over').forEach(activeTarget => {
+    if (activeTarget !== target) activeTarget.classList.remove('is-drag-over');
+  });
+  target.classList.add('is-drag-over');
+});
+
+document.addEventListener('drop', async (e) => {
+  const target = e.target instanceof Element ? e.target.closest('.tab-drop-target') : null;
+  if (!target || !e.dataTransfer) return;
+  e.preventDefault();
+  const tabId = Number(e.dataTransfer.getData('text/plain'));
+  const targetWindowId = Number(target.dataset.dropWindowId);
+  const targetGroupId = Number(target.dataset.dropGroupId);
+  clearBoardDragState();
+  if (![tabId, targetWindowId, targetGroupId].every(Number.isFinite)) return;
+  await moveBoardTab(tabId, targetWindowId, targetGroupId);
+});
+
+document.addEventListener('dragend', clearBoardDragState);
+
 
 /* ----------------------------------------------------------------
    LIVE TAB LISTENERS — re-render when tabs change
@@ -4376,6 +4635,9 @@ function scheduleRefresh() {
 if (typeof chrome !== 'undefined' && chrome.tabs) {
   chrome.tabs.onCreated.addListener(scheduleRefresh);
   chrome.tabs.onRemoved.addListener(scheduleRefresh);
+  chrome.tabs.onMoved.addListener(scheduleRefresh);
+  chrome.tabs.onAttached.addListener(scheduleRefresh);
+  chrome.tabs.onDetached.addListener(scheduleRefresh);
   chrome.tabs.onUpdated.addListener((_tabId, changeInfo) => {
     // Only refresh on meaningful changes; ignore intermediate loading noise.
     if (changeInfo.status === 'complete' || changeInfo.url) scheduleRefresh();
@@ -4392,6 +4654,19 @@ if (typeof chrome !== 'undefined' && chrome.tabs) {
   });
 }
 
+if (typeof chrome !== 'undefined' && chrome.tabGroups) {
+  chrome.tabGroups.onCreated?.addListener(scheduleRefresh);
+  chrome.tabGroups.onMoved?.addListener(scheduleRefresh);
+  chrome.tabGroups.onUpdated?.addListener(scheduleRefresh);
+  chrome.tabGroups.onRemoved?.addListener(scheduleRefresh);
+}
+
+if (typeof chrome !== 'undefined' && chrome.windows) {
+  chrome.windows.onCreated?.addListener(scheduleRefresh);
+  chrome.windows.onRemoved?.addListener(scheduleRefresh);
+  chrome.windows.onFocusChanged?.addListener(scheduleRefresh);
+}
+
 if (typeof chrome !== 'undefined' && chrome.runtime?.onMessage) {
   chrome.runtime.onMessage.addListener((message) => {
     if (message?.type === 'toggle-privacy-mode') togglePrivacyMode();
@@ -4399,8 +4674,7 @@ if (typeof chrome !== 'undefined' && chrome.runtime?.onMessage) {
 }
 
 
-// Ctrl/Cmd + Shift + G — quickly toggle between Groups and Domains view.
-// No-op when no Chrome tab groups exist.
+// Ctrl/Cmd + Shift + G — quickly toggle between Board and Domains view.
 document.addEventListener('keydown', async (e) => {
   if (e.key === 'Escape') {
     closeGroupColorPickers();
@@ -4409,7 +4683,6 @@ document.addEventListener('keydown', async (e) => {
   }
   if (!(e.ctrlKey || e.metaKey) || !e.shiftKey) return;
   if (e.key !== 'G' && e.key !== 'g') return;
-  if (tabGroupsList.length === 0) return;
   e.preventDefault();
   const stored = await loadViewMode();
   await saveViewMode(stored === 'group' ? 'domain' : 'group');

@@ -96,6 +96,16 @@
     }
   }
 
+  async function fetchWindows() {
+    const chromeApi = getChromeApi();
+    if (!chromeApi?.windows) return [];
+    try {
+      return await chromeApi.windows.getAll({ populate: false });
+    } catch {
+      return [];
+    }
+  }
+
   function exactUnpinnedIdsForUrls(tabs, urls) {
     const urlSet = new Set(urls || []);
     return (tabs || [])
@@ -147,6 +157,16 @@
     await chromeApi.tabs.update(match.id, { active: true });
     await chromeApi.windows.update(match.windowId, { focused: true });
     return match;
+  }
+
+  async function focusTabById(tabId) {
+    const chromeApi = getChromeApi();
+    const normalizedId = Number(tabId);
+    if (!chromeApi?.tabs || !chromeApi?.windows || !Number.isFinite(normalizedId)) return null;
+    const tab = await chromeApi.tabs.get(normalizedId);
+    await chromeApi.tabs.update(normalizedId, { active: true });
+    await chromeApi.windows.update(tab.windowId, { focused: true });
+    return tab;
   }
 
   async function closeDuplicateTabs(urls, keepOne = true) {
@@ -217,6 +237,53 @@
     const chromeApi = getChromeApi();
     if (!chromeApi?.tabs || !tabIds?.length) return;
     await chromeApi.tabs.ungroup(tabIds);
+  }
+
+  async function moveTabs(tabIds, options = {}) {
+    const chromeApi = getChromeApi();
+    if (!chromeApi?.tabs || !tabIds?.length) return [];
+
+    const requestedIds = new Set(
+      tabIds
+        .map(id => Number(id))
+        .filter(Number.isFinite)
+    );
+    if (requestedIds.size === 0) return [];
+
+    const allTabs = await chromeApi.tabs.query({});
+    const movableTabs = allTabs.filter(tab => requestedIds.has(tab.id) && !tab.pinned);
+    const movableIds = movableTabs.map(tab => tab.id);
+    if (movableIds.length === 0) return [];
+
+    const targetWindowId = Number(options.windowId);
+    const targetGroupId = Number(options.groupId);
+    const targetIndex = Number.isFinite(Number(options.index)) ? Number(options.index) : -1;
+    const needsWindowMove = Number.isFinite(targetWindowId)
+      && movableTabs.some(tab => tab.windowId !== targetWindowId);
+
+    if (needsWindowMove) {
+      await chromeApi.tabs.move(movableIds, {
+        windowId: targetWindowId,
+        index: targetIndex,
+      });
+    }
+
+    if (Number.isFinite(targetGroupId) && targetGroupId >= 0) {
+      await chromeApi.tabs.group({ tabIds: movableIds, groupId: targetGroupId });
+    } else {
+      try {
+        await chromeApi.tabs.ungroup(movableIds);
+      } catch {
+        // Moving an already-ungrouped tab is a valid no-op.
+      }
+    }
+
+    return await Promise.all(
+      movableIds.map(async id => {
+        try { return await chromeApi.tabs.get(id); }
+        catch { return null; }
+      })
+    ).then(tabs => tabs.filter(Boolean));
   }
 
   async function getRecentlyClosed(maxResults = 10) {
@@ -343,15 +410,18 @@
     normalizeTab,
     fetchOpenTabs,
     fetchTabGroups,
+    fetchWindows,
     exactUnpinnedIdsForUrls,
     closeTabsByUrls,
     closeTabsByIds,
     focusTab,
+    focusTabById,
     closeDuplicateTabs,
     closeTabOutDupes,
     groupTabs,
     updateGroup,
     ungroupTabs,
+    moveTabs,
     getRecentlyClosed,
     restoreSession,
     normalizeSessionRestoreTabs,
