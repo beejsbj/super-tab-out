@@ -1,0 +1,79 @@
+name: Build extension
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Test
+        run: npm test
+
+      - name: Package
+        run: npm run package
+
+      # Runs after packaging so the ZIP contents are checked too.
+      - name: Validate
+        run: npm run validate
+
+      - name: Stage downloads under stable names
+        run: |
+          version=$(node -p "require('./extension/manifest.json').version")
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          mkdir -p out
+          cp "dist/super-tab-out-chrome-$version.zip" out/super-tab-out-chrome.zip
+          cp "dist/super-tab-out-edge-$version.zip" out/super-tab-out-edge.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: super-tab-out-${{ env.VERSION }}-${{ github.sha }}
+          path: out/*.zip
+          if-no-files-found: error
+
+  # One rolling release that always holds the newest main build, so
+  # releases/latest/download/super-tab-out-chrome.zip is a permanent link.
+  release:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: rolling
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+
+      - name: Publish rolling release
+        run: |
+          short=${GITHUB_SHA::7}
+          title="Latest build ($short)"
+          notes="Built from $GITHUB_SHA on main. Unzip, then use **Load unpacked** on \`chrome://extensions\` with Developer mode on."
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh api -X PATCH "repos/$GH_REPO/git/refs/tags/$TAG" -f sha="$GITHUB_SHA" -F force=true >/dev/null
+            gh release upload "$TAG" out/*.zip --clobber
+            gh release edit "$TAG" --title "$title" --notes "$notes" --latest
+          else
+            gh release create "$TAG" out/*.zip --target "$GITHUB_SHA" --title "$title" --notes "$notes" --latest
+          fi

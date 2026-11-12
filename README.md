@@ -96,10 +96,22 @@ Additional release screenshots:
 
 ## Install
 
+> This is a personal fork of [SivanCola/super-tab-out](https://github.com/SivanCola/super-tab-out) that adds a read-only bookmark inbox and a live window tab board.
+
+### Download a build
+
+1. Download the latest ZIP, built by CI from `main`: [Chrome / Brave](https://github.com/beejsbj/super-tab-out/releases/latest/download/super-tab-out-chrome.zip) or [Edge](https://github.com/beejsbj/super-tab-out/releases/latest/download/super-tab-out-edge.zip).
+2. Unzip it somewhere permanent; the browser loads the extension from that folder.
+3. Open `chrome://extensions`, enable **Developer mode**, click **Load unpacked**, and select the unzipped folder.
+
+To update later, download again, replace the folder's contents, and click **Reload** on the extension page.
+
+### Load from source
+
 1. Clone the repo:
 
 ```bash
-git clone https://github.com/SivanCola/super-tab-out.git
+git clone https://github.com/beejsbj/super-tab-out.git
 cd super-tab-out
 ```
 
